@@ -191,6 +191,44 @@ list_dataflows(limit=10)
 
 See `docs/ENDPOINT_CONFIGURATION.md` for provider-specific behaviours and constraint strategies.
 
+### Custom SDMX Endpoints
+
+Additional endpoints (an internal/enterprise SDMX server, for example) can be registered
+without code changes via `SDMX_CUSTOM_ENDPOINTS_FILE`, pointed at a JSON file containing an
+array of endpoint entries:
+
+```json
+[
+  {
+    "key": "ACME",
+    "name": "Acme Statistics",
+    "base_url": "https://sdmx.acme.example/rest",
+    "agency_id": "ACME",
+    "description": "Acme's internal SDMX endpoint",
+    "constraints": { "single_flow": "availableconstraint", "bulk": null },
+    "references_support": ["none", "children", "parents", "all"],
+    "latest_version_strategy": "omit",
+    "auth": { "header": "X-Api-Key", "env": "SDMX_ACME_KEY" }
+  }
+]
+```
+
+Every entry is validated at startup and the whole file is rejected on the first invalid
+entry: `key` must be upper-case and cannot collide with a built-in endpoint (`SPC`, `ECB`,
+etc.), `base_url` must be `http`/`https`, `agency_id` must be a valid SDMX provider
+identifier, and `auth.env` must be a valid environment variable name (the referenced env
+var itself is read at request time, same as the built-in `STATSNZ` endpoint).
+
+`latest_version_strategy` controls how a request path's trailing `/latest` segment is
+rewritten for providers that don't support it:
+
+- unset / `null` — no rewriting (the default, and the behaviour for every built-in endpoint).
+- `"omit"` — the `/latest` segment is stripped entirely.
+- any other value (e.g. `"2.0.0"`) — substituted in place of `/latest` as a pinned version.
+
+Registered custom endpoints then work like any built-in one: pass `endpoint="ACME"` to
+any endpoint-scoped tool, or set `SDMX_ENDPOINT=ACME` to make it the session default.
+
 ## Installation
 
 ### Prerequisites

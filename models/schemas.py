@@ -9,12 +9,22 @@ Following MCP SDK v2 best practices for structured output support.
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, field_validator
+
+from urllib.parse import urlparse
+
+from utils import validate_provider
+
+import re
 
 # Valid probe_data_url() status values. The tool only ever emits one of these;
 # callers (SuggestionResult.original_status, SuggestionProbeResult.status) pass
 # them through unchanged.
 ProbeStatus = Literal["nonempty", "empty", "error"]
+
+# Valid field patterns for custom SDMX endpoints
+_ENDPOINT_KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
+_ENV_VAR_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 # =============================================================================
 # Common/Shared Schemas
@@ -738,6 +748,83 @@ class EndpointListResult(BaseModel):
     current: str = Field(description="Currently active endpoint key")
     endpoints: list[EndpointInfo] = Field(description="List of available endpoints")
     note: str = Field(description="Usage hint")
+
+
+class CustomEndpointConstraints(BaseModel):
+    """Constraint-fetching strategy for a custom endpoint."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    single_flow: Literal["availableconstraint", "references", "references_all"] | None = None
+    bulk: Literal["contentconstraint", "availableconstraint"] | None = None
+
+
+class CustomEndpointAuth(BaseModel):
+    """Optional subscription-key header for a custom endpoint, injected on every request. Read from the specified env var."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    header: str
+    env: str
+
+    @field_validator("env")
+    @classmethod
+    def _validate_env_name(cls, v: str) -> str:
+        if not _ENV_VAR_NAME_PATTERN.match(v):
+            raise ValueError(f"auth.env must be a valid environment variable name, got {v!r}")
+        return v
+
+class CustomEndpoint(BaseModel):
+    """Class for one custom endpoint entry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    name: str
+    base_url: str
+    agency_id: str
+    description: str
+    constraints: CustomEndpointConstraints = Field(default_factory=CustomEndpointConstraints)
+    references_support: list[str] | None = None
+    latest_version_strategy: str | None = None
+    auth: CustomEndpointAuth | None = None
+
+    @field_validator("key")
+    @classmethod
+    def _validate_key(cls, v: str) -> str:
+        if not _ENDPOINT_KEY_PATTERN.match(v):
+            raise ValueError(
+                f"key must match {_ENDPOINT_KEY_PATTERN.pattern!r} (upper-case, "
+                f"start with a letter), got {v!r}"
+            )
+        return v
+
+    @field_validator("base_url")
+    @classmethod
+    def _validate_base_url(cls, v: str) -> str:
+        parsed = urlparse(v)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError(f"base_url must be an http(s) URL, got {v!r}")
+        return v
+
+    @field_validator("agency_id")
+    @classmethod
+    def _validate_agency_id(cls, v: str) -> str:
+        if not validate_provider(v):
+            raise ValueError(f"agency_id is not a valid SDMX provider identifier: {v!r}")
+        return v
+
+    @field_validator("latest_version_strategy")
+    @classmethod
+    def _validate_latest_version_strategy(cls, v: str | None) -> str | None:
+        if v is None or v == "omit":
+            return v
+        if not v or re.search(r"[\s/]", v): #TODO: atm this only disallows whitespace/slash, but it should actually enforce proper version numbers
+            raise ValueError(
+                f"latest_version_strategy must be None, 'omit', or a version string "
+                f"with no '/' or whitespace, got {v!r}"
+            )
+        return v
 
 
 # =============================================================================

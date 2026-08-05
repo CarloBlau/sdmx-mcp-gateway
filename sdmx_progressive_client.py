@@ -251,8 +251,32 @@ class SDMXProgressiveClient:
                 verify=ssl_ctx,
                 headers=default_headers or None,
                 params=default_params or None,
+                event_hooks={"request": [self._rewrite_latest_hook]},
             )
         return self.session
+
+    async def _rewrite_latest_hook(self, request: httpx.Request) -> None:
+        """Rewrite a trailing `/latest` path segment per this endpoint's config.
+        No-op for endpoints without a `latest_version_strategy`, including every
+        built-in provider.
+        """
+        ep = SDMX_ENDPOINTS.get(self.endpoint_key or "")
+        
+        strategy = ep.get("latest_version_strategy") if ep else None
+
+        if strategy is None:
+            return
+
+        path = request.url.path
+        if not path.endswith("/latest"):
+            return
+
+        if strategy == "omit":
+            new_path = path[: -len("/latest")]
+        else:
+            new_path = path[: -len("latest")] + strategy
+
+        request.url = request.url.copy_with(path=new_path)
 
     def _build_default_query_params(self) -> dict[str, str]:
         """Return per-endpoint query params merged into every request."""

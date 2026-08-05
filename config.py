@@ -23,8 +23,11 @@ Constraint strategies (per endpoint):
           iterate per-flow (slow) or is unavailable.
 """
 
+import json
 import os
 from typing import Any
+from pydantic import ValidationError
+from models.schemas import CustomEndpoint
 
 # Current active configuration (can be changed at runtime)
 _current_endpoint_key = os.getenv("SDMX_ENDPOINT", "SPC")
@@ -228,6 +231,47 @@ SDMX_ENDPOINTS: dict[str, dict[str, Any]] = {
         },
     },
 }
+
+
+
+def load_custom_endpoints(path: str | None) -> dict[str, dict[str, Any]]:
+    """Load and validate custom endpoint entries from a JSON file.
+
+    Returns an empty dict when `path` is unset. Raises immediately on the
+    first invalid entry -- no partial loading -- and rejects any key that
+    collides with a built-in entry in SDMX_ENDPOINTS or with an earlier
+    entry in the same file.
+    """
+    if not path:
+        return {}
+
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+
+    if not isinstance(raw, list):
+        raise ValueError(
+            f"{path}: SDMX_CUSTOM_ENDPOINTS_FILE must contain a JSON array of endpoint entries"
+        )
+
+    loaded: dict[str, dict[str, Any]] = {}
+    for i, item in enumerate(raw):
+        try:
+            entry = CustomEndpoint.model_validate(item)
+        except ValidationError as e:
+            raise ValueError(f"{path}: invalid custom endpoint entry at index {i}: {e}") from e
+
+        if entry.key in SDMX_ENDPOINTS or entry.key in loaded:
+            raise ValueError(
+                f"{path}: custom endpoint key {entry.key!r} collides with an existing endpoint"
+            )
+
+        loaded[entry.key] = entry.model_dump(exclude_none=True, exclude={"key"})
+
+    return loaded
+
+
+# Merge validated custom endpoints (if any) before get_current_config() runs.
+SDMX_ENDPOINTS.update(load_custom_endpoints(os.getenv("SDMX_CUSTOM_ENDPOINTS_FILE")))
 
 
 def get_constraint_strategy(endpoint_key: str, kind: str = "single_flow") -> str | None:
