@@ -1,10 +1,12 @@
-"""Custom endpoint registration: config.py's SDMX_CUSTOM_ENDPOINTS_FILE loader."""
+"""Custom endpoint registration: config.py's SDMX_CUSTOM_ENDPOINTS_FILE loader.
+Uses pytest's built-in tmp_path fixture for temporary custom endpoint files."""
 
 import json
 
 import pytest
 
-from config import SDMX_ENDPOINTS, load_custom_endpoints
+from config import SDMX_ENDPOINTS, load_custom_endpoints, add_custom_endpoints
+from models.schemas import CustomEndpointConstraints, CustomEndpointAuth
 
 pytestmark = pytest.mark.unit
 
@@ -24,32 +26,31 @@ def _valid_entry(**overrides):
         "description": "Acme's internal SDMX endpoint",
         "constraints": {"single_flow": "availableconstraint", "bulk": None},
         "references_support": ["none", "children"],
-        "latest_version_strategy": "omit",
+        "version_tag": "omit",
         "auth": {"header": "X-Api-Key", "env": "SDMX_ACME_KEY"},
     }
     entry.update(overrides)
     return entry
 
 
-def test_unset_path_returns_empty_dict():
-    assert load_custom_endpoints(None) == {}
-    assert load_custom_endpoints("") == {}
+def test_unset_path_returns_empty_list():
+    assert load_custom_endpoints(None) == []
+    assert load_custom_endpoints("") == []
 
 
 def test_valid_entry_is_loaded(tmp_path):
     path = _write(tmp_path, [_valid_entry()])
     loaded = load_custom_endpoints(path)
 
-    assert set(loaded) == {"ACME"}
-    entry = loaded["ACME"]
-    assert "key" not in entry  # key is the dict key, not stored again inside
-    assert entry["name"] == "Acme Statistics"
-    assert entry["base_url"] == "https://sdmx.acme.example/rest"
-    assert entry["agency_id"] == "ACME"
-    assert entry["constraints"] == {"single_flow": "availableconstraint"}
-    assert entry["references_support"] == ["none", "children"]
-    assert entry["latest_version_strategy"] == "omit"
-    assert entry["auth"] == {"header": "X-Api-Key", "env": "SDMX_ACME_KEY"}
+    assert [ep.key for ep in loaded] == ["ACME"]
+    entry = loaded[0]
+    assert entry.name == "Acme Statistics"
+    assert entry.base_url == "https://sdmx.acme.example/rest"
+    assert entry.agency_id == "ACME"
+    assert entry.constraints == CustomEndpointConstraints(single_flow="availableconstraint", bulk=None)
+    assert entry.references_support == ["none", "children"]
+    assert entry.version_tag == "omit"
+    assert entry.auth == CustomEndpointAuth(header="X-Api-Key", env="SDMX_ACME_KEY")
 
 
 def test_multiple_entries_all_load(tmp_path):
@@ -58,7 +59,7 @@ def test_multiple_entries_all_load(tmp_path):
         [_valid_entry(key="ACME", agency_id="ACME"), _valid_entry(key="BETA", agency_id="BETA")],
     )
     loaded = load_custom_endpoints(path)
-    assert set(loaded) == {"ACME", "BETA"}
+    assert {ep.key for ep in loaded} == {"ACME", "BETA"}
 
 
 def test_missing_required_field_rejects_the_whole_file(tmp_path):
@@ -99,11 +100,25 @@ def test_bad_agency_id_is_rejected(tmp_path, bad_agency):
         load_custom_endpoints(path)
 
 
-def test_key_colliding_with_a_builtin_endpoint_is_rejected(tmp_path):
-    assert "ECB" in SDMX_ENDPOINTS
-    path = _write(tmp_path, [_valid_entry(key="ECB", agency_id="ECB")])
-    with pytest.raises(ValueError):
-        load_custom_endpoints(path)
+def test_adding_a_new_endpoint_is_accepted(tmp_path):
+    key = "ZZTESTORG"
+    assert key not in SDMX_ENDPOINTS
+    path = _write(tmp_path, [_valid_entry(key=key, agency_id=key, name="ZZ Test Org Statistics")])
+    loaded = load_custom_endpoints(path)
+    try:
+        add_custom_endpoints(loaded)
+        assert SDMX_ENDPOINTS[key]["name"] == "ZZ Test Org Statistics"
+        assert SDMX_ENDPOINTS[key]["base_url"] == "https://sdmx.acme.example/rest"
+    finally:
+        del SDMX_ENDPOINTS[key]
+
+def test_adding_a_builtin_endpoint_key_does_nothing(tmp_path):
+    key = "ECB"
+    assert key in SDMX_ENDPOINTS
+    path = _write(tmp_path, [_valid_entry(key=key, agency_id=key)])
+    loaded = load_custom_endpoints(path)
+    add_custom_endpoints(loaded)
+    assert SDMX_ENDPOINTS[key]["name"] == "European Central Bank"
 
 
 def test_key_colliding_within_the_same_file_is_rejected(tmp_path):
@@ -122,22 +137,22 @@ def test_bad_auth_env_name_is_rejected(tmp_path, bad_env):
         load_custom_endpoints(path)
 
 
-@pytest.mark.parametrize("bad_strategy", ["a/b", "1.0 ", " 1.0", "\t"])
-def test_bad_latest_version_strategy_is_rejected(tmp_path, bad_strategy):
-    path = _write(tmp_path, [_valid_entry(latest_version_strategy=bad_strategy)])
+@pytest.mark.parametrize("bad_version_tag", ["a/b", "1.0 ", " 1.0", "\t"])
+def test_bad_version_tag_is_rejected(tmp_path, bad_version_tag):
+    path = _write(tmp_path, [_valid_entry(version_tag=bad_version_tag)])
     with pytest.raises(ValueError):
         load_custom_endpoints(path)
 
 
-def test_pinned_version_latest_strategy_is_accepted(tmp_path):
-    path = _write(tmp_path, [_valid_entry(latest_version_strategy="1.0.0")])
+def test_pinned_version_tag_is_accepted(tmp_path):
+    path = _write(tmp_path, [_valid_entry(version_tag="1.0.0")])
     loaded = load_custom_endpoints(path)
-    assert loaded["ACME"]["latest_version_strategy"] == "1.0.0"
+    assert loaded[0].version_tag == "1.0.0"
 
 
-def test_no_latest_version_strategy_is_omitted_from_the_entry(tmp_path):
+def test_no_version_tag_defaults_to_none(tmp_path):
     entry = _valid_entry()
-    del entry["latest_version_strategy"]
+    del entry["version_tag"]
     path = _write(tmp_path, [entry])
     loaded = load_custom_endpoints(path)
-    assert "latest_version_strategy" not in loaded["ACME"]
+    assert loaded[0].version_tag is None

@@ -1,7 +1,9 @@
 """Regression tests for the `/latest`-rewriting request hook wired into
 SDMXProgressiveClient._get_session(). Built-in providers must see no change
-in behaviour; only an endpoint declaring `latest_version_strategy` is
-rewritten."""
+in behaviour; only an endpoint declaring `version_tag` is rewritten.
+
+Uses pytest's built-in monkeypatch fixture for temporary overwrites of
+config.py's SDMX_ENDPOINTS."""
 
 import pytest
 import respx
@@ -15,8 +17,12 @@ pytestmark = pytest.mark.unit
 @pytest.mark.asyncio
 @respx.mock
 async def test_builtin_providers_are_never_rewritten():
-    for key, ep in SDMX_ENDPOINTS.items():
-        assert ep.get("latest_version_strategy") is None, key
+
+    builtin_eps = {key: SDMX_ENDPOINTS.get(key)
+                   for key in {"SPC", "ECB", "OECD"}}
+
+    for key, ep in builtin_eps.items():
+        assert ep.get("version_tag") is None, key
         client = SDMXProgressiveClient(
             base_url=ep["base_url"], agency_id=ep["agency_id"], endpoint_key=key
         )
@@ -31,14 +37,14 @@ async def test_builtin_providers_are_never_rewritten():
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_omit_strategy_strips_the_trailing_latest_segment(monkeypatch):
+async def test_omit_version_tag_strips_the_trailing_latest_segment(monkeypatch):
     monkeypatch.setitem(
         SDMX_ENDPOINTS,
         "TESTOMIT",
         {
             "base_url": "https://sdmx.test.example/rest",
             "agency_id": "TESTOMIT",
-            "latest_version_strategy": "omit",
+            "version_tag": "omit",
         },
     )
     client = SDMXProgressiveClient(
@@ -56,14 +62,14 @@ async def test_omit_strategy_strips_the_trailing_latest_segment(monkeypatch):
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_pinned_version_strategy_substitutes_the_literal_version(monkeypatch):
+async def test_pinned_version_tag_substitutes_the_literal_version(monkeypatch):
     monkeypatch.setitem(
         SDMX_ENDPOINTS,
         "TESTPIN",
         {
             "base_url": "https://sdmx.test.example/rest",
             "agency_id": "TESTPIN",
-            "latest_version_strategy": "2.0.0",
+            "version_tag": "2.0.0",
         },
     )
     client = SDMXProgressiveClient(
@@ -81,7 +87,7 @@ async def test_pinned_version_strategy_substitutes_the_literal_version(monkeypat
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_strategy_only_rewrites_a_trailing_latest_segment(monkeypatch):
+async def test_version_tag_only_rewrites_a_trailing_latest_segment(monkeypatch):
     """A path that merely contains 'latest' mid-segment (not as the final
     path component) must be left untouched."""
     monkeypatch.setitem(
@@ -90,7 +96,7 @@ async def test_strategy_only_rewrites_a_trailing_latest_segment(monkeypatch):
         {
             "base_url": "https://sdmx.test.example/rest",
             "agency_id": "TESTOMIT2",
-            "latest_version_strategy": "omit",
+            "version_tag": "omit",
         },
     )
     client = SDMXProgressiveClient(

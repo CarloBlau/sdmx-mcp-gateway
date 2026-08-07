@@ -786,7 +786,7 @@ class CustomEndpoint(BaseModel):
     description: str
     constraints: CustomEndpointConstraints = Field(default_factory=CustomEndpointConstraints)
     references_support: list[str] | None = None
-    latest_version_strategy: str | None = None
+    version_tag: str | None = None
     auth: CustomEndpointAuth | None = None
 
     @field_validator("key")
@@ -814,15 +814,15 @@ class CustomEndpoint(BaseModel):
             raise ValueError(f"agency_id is not a valid SDMX provider identifier: {v!r}")
         return v
 
-    @field_validator("latest_version_strategy")
+    @field_validator("version_tag")
     @classmethod
-    def _validate_latest_version_strategy(cls, v: str | None) -> str | None:
+    def _validate_version_tag(cls, v: str | None) -> str | None:
         if v is None or v == "omit":
             return v
-        if not v or re.search(r"[\s/]", v): #TODO: atm this only disallows whitespace/slash, but it should actually enforce proper version numbers
+        if not v or re.search(r"[\s/?#\\]", v):
             raise ValueError(
-                f"latest_version_strategy must be None, 'omit', or a version string "
-                f"with no '/' or whitespace, got {v!r}"
+                f"version_tag must be None, 'omit', "
+                f"or a valid version string, got {v!r}"
             )
         return v
 

@@ -193,8 +193,8 @@ See `docs/ENDPOINT_CONFIGURATION.md` for provider-specific behaviours and constr
 
 ### Custom SDMX Endpoints
 
-Additional endpoints (an internal/enterprise SDMX server, for example) can be registered
-without code changes via `SDMX_CUSTOM_ENDPOINTS_FILE`, pointed at a JSON file containing an
+Additional endpoints (an internal SDMX server, for example) can be registered 
+via `SDMX_CUSTOM_ENDPOINTS_FILE`, pointed at a JSON file containing an
 array of endpoint entries:
 
 ```json
@@ -207,7 +207,7 @@ array of endpoint entries:
     "description": "Acme's internal SDMX endpoint",
     "constraints": { "single_flow": "availableconstraint", "bulk": null },
     "references_support": ["none", "children", "parents", "all"],
-    "latest_version_strategy": "omit",
+    "version_tag": "1.0.0",
     "auth": { "header": "X-Api-Key", "env": "SDMX_ACME_KEY" }
   }
 ]
@@ -216,15 +216,13 @@ array of endpoint entries:
 Every entry is validated at startup and the whole file is rejected on the first invalid
 entry: `key` must be upper-case and cannot collide with a built-in endpoint (`SPC`, `ECB`,
 etc.), `base_url` must be `http`/`https`, `agency_id` must be a valid SDMX provider
-identifier, and `auth.env` must be a valid environment variable name (the referenced env
-var itself is read at request time, same as the built-in `STATSNZ` endpoint).
+identifier, and `auth.env` must be a valid environment variable name.
 
-`latest_version_strategy` controls how a request path's trailing `/latest` segment is
-rewritten for providers that don't support it:
+`version_tag` controls how a request path's trailing version tag is composed:
 
-- unset / `null` — no rewriting (the default, and the behaviour for every built-in endpoint).
-- `"omit"` — the `/latest` segment is stripped entirely.
-- any other value (e.g. `"2.0.0"`) — substituted in place of `/latest` as a pinned version.
+- unset / `null` — uses `latest` (the default, and the behaviour for every built-in endpoint).
+- `"omit"` — the version tag is stripped entirely.
+- any other valid version string (e.g. `"2.0.0"`) — substituted in place of `latest` as a pinned version.
 
 Registered custom endpoints then work like any built-in one: pass `endpoint="ACME"` to
 any endpoint-scoped tool, or set `SDMX_ENDPOINT=ACME` to make it the session default.

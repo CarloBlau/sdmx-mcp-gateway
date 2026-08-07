@@ -257,24 +257,23 @@ class SDMXProgressiveClient:
 
     async def _rewrite_latest_hook(self, request: httpx.Request) -> None:
         """Rewrite a trailing `/latest` path segment per this endpoint's config.
-        No-op for endpoints without a `latest_version_strategy`, including every
+        No-op for endpoints without a `version_tag`, including every
         built-in provider.
         """
         ep = SDMX_ENDPOINTS.get(self.endpoint_key or "")
-        
-        strategy = ep.get("latest_version_strategy") if ep else None
+        version_tag = ep.get("version_tag") if ep else None
 
-        if strategy is None:
+        if version_tag is None:
             return
 
         path = request.url.path
         if not path.endswith("/latest"):
             return
 
-        if strategy == "omit":
+        if version_tag == "omit":
             new_path = path[: -len("/latest")]
         else:
-            new_path = path[: -len("latest")] + strategy
+            new_path = path[: -len("latest")] + version_tag
 
         request.url = request.url.copy_with(path=new_path)
 
@@ -384,6 +383,15 @@ class SDMXProgressiveClient:
         # If not "latest", return as-is
         if version != "latest":
             return version
+
+        # Check for explicit version tag of the endpoint
+        ep = SDMX_ENDPOINTS.get(self.endpoint_key or "")
+        version_tag = ep.get("version_tag") if ep else None
+
+        if version_tag == "omit":
+            return ""
+        elif version_tag:
+            return version_tag
 
         agency_id = agency_id or self.agency_id
         cache_key = (agency_id, dataflow_id)
