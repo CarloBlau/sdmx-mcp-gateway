@@ -11,16 +11,19 @@ Updated to support multi-user deployments:
 
 from __future__ import annotations
 
+import csv
 import logging
 import os
 import sys
 import xml.etree.ElementTree as ET
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, urlencode
+from httpx import Response
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from models.schemas import ParsedCsvRows, FetchRowsInput
 from sdmx_progressive_client import DATAFLOW_CACHE_TTL_S, SDMXProgressiveClient
 from utils import (
     SDMX_NAMESPACES,
@@ -1186,3 +1189,99 @@ async def build_sdmx_key(
     except Exception as e:
         logger.exception("Failed to build key for %s", dataflow_id)
         return {"error": str(e), "dataflow_id": dataflow_id}
+
+
+
+async def resolve_url_to_fetch(
+        args: FetchRowsInput,
+        ctx: Context, 
+        client: SDMXProgressiveClient,
+) -> dict[str, Any]:
+
+    if args.data_url is not None:
+
+        if client.validate_data_url(args.data_url):
+            return {"url": args.data_url}
+
+        raise ValueError(
+            "data_url must target the selected endpoint's base URL "
+            f"({client.base_url}); got a URL with a different "
+            "scheme/host, which is not allowed."
+        )
+
+
+    if args.dataflow_id is None:
+        raise ValueError("Either data_url or dataflow_id is required")
+
+
+    built = await build_data_url(
+        client=client,
+        dataflow_id=args.dataflow_id,
+        key=args.key,
+        filters=args.filters,
+        start_period=args.start_period,
+        end_period=args.end_period,
+        agency_id=args.agency_id or client.agency_id,
+        output_format=args.format_type,
+        include_headers=True,
+        ctx=ctx,
+    )
+
+    return built
+   
+
+
+async def parse_rows_from_response(response: Response, max_rows: int) -> ParsedCsvRows:
+    """
+    Parse an SDMx-CSV body line-by-line, stopping as soon as max_rows is reached.
+
+    Reads line-by-line rather than buffering the whole response, stopping as
+    soon as we know the result is truncated. This keeps memory/latency
+    bounded by max_rows even for very large provider responses, at the cost
+    of not computing an exact total row count when truncated.
+    """
+    header_row: list[str] | None = None
+    rows: list[dict[str, str]] = []
+    truncated = False
+
+    async for line in response.aiter_lines():
+        if not line:
+            continue
+        parsed = next(csv.reader([line]))
+        if header_row is None:
+            header_row = parsed
+            continue
+        if len(rows) < max_rows:
+            rows.append(
+                {k: (v if v is not None else "") for k, v in zip(header_row, parsed)}
+            )
+        else:
+            truncated = True
+            break
+
+    return ParsedCsvRows(headers=header_row or [], rows=rows, truncated=truncated)
+
+
+async def fetch_data_rows(
+    client: SDMXProgressiveClient,
+    data_url: str,
+    max_rows: int,
+    timeout_s: float,
+) -> ParsedCsvRows:
+    """Fetch an SDMx-CSV data URL and parse it into rows, bounded by max_rows."""
+
+    session = await client._get_session()
+
+    async with session.stream(
+        "GET",
+        data_url,
+        headers={"Accept": "application/vnd.sdmx.data+csv;version=1.0.0"},
+        timeout=timeout_s,
+    ) as response:
+
+        if not response.is_error:
+            return await parse_rows_from_response(response, max_rows)
+
+        # read the entire stream so the response body is available in the exception
+        await response.aread()
+        response.raise_for_status()

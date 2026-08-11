@@ -937,6 +937,63 @@ class ProbeResult(BaseModel):
     )
 
 
+
+# =============================================================================
+# Fetch Data Rows Schemas
+# =============================================================================
+
+class FetchRowsInput(BaseModel):
+    data_url: str | None = None
+    dataflow_id: str | None = None
+    key: str | None = None
+    filters: dict[str, str] | None = None
+    start_period: str | None = None
+    end_period: str | None = None
+    format_type: str = "csv"
+    agency_id: str | None = None
+    max_rows: int = 200
+    timeout_ms: int = 20000
+    endpoint: str | None = None
+
+    @field_validator("format_type")
+    @classmethod
+    def _validate_format_type(cls, v: str) -> str:
+        if v.lower() != "csv":
+            raise ValueError("Only format_type='csv' is currently supported by fetch_data_rows")
+        return v
+
+    @field_validator("max_rows")
+    @classmethod
+    def _normalize_max_rows(cls, v: int) -> int:
+        return min(max(v,1), 5000)
+
+
+class FetchRowsResult(BaseModel):
+    """Result from fetch_data_rows() tool."""
+
+    status: Literal["ok", "error"] = Field(description="Outcome of the fetch")
+    endpoint: str = Field(description="Endpoint key used")
+    message: str | None = Field(default=None, description="Error message when status='error'")
+    url: str = Field(default="", description="Resolved data URL")
+    format: str = Field(default="csv", description="Requested output format")
+    dataflow_id: str | None = Field(default=None, description="Dataflow identifier, if resolved")
+    key: str | None = Field(default=None, description="Resolved SDMX key")
+    headers: list[str] = Field(default_factory=list, description="CSV column headers")
+    rows: list[dict[str, str]] = Field(default_factory=list, description="Retrieved data rows")
+    returned_rows: int = Field(default=0, description="Number of rows actually returned")
+    max_rows: int | None = Field(default=None, description="max_rows cap applied to this request")
+    truncated: bool = Field(default=False, description="Whether results were truncated at max_rows")
+    notes: list[str] = Field(default_factory=list, description="Diagnostic notes")
+
+
+class ParsedCsvRows(BaseModel):
+    """Result of streaming/parsing an SDMx-CSV response body."""
+
+    headers: list[str] = Field(default_factory=list, description="CSV column headers")
+    rows: list[dict[str, str]] = Field(default_factory=list, description="Parsed data rows")
+    truncated: bool = Field(default=False, description="Whether parsing stopped at max_rows")
+
+
 # =============================================================================
 # Suggestion Schemas
 # =============================================================================

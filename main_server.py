@@ -23,6 +23,7 @@ import argparse
 import logging
 import os
 import sys
+import httpx
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -71,6 +72,8 @@ from models.schemas import (
     StructureEdge,
     StructureInfo,
     StructureNode,
+    FetchRowsInput,
+    FetchRowsResult,
     SuggestionProbeResult,
     SuggestionResult,
     TimeOverlap,
@@ -93,6 +96,8 @@ from resources.sdmx_resources import (
 )
 from sdmx_progressive_client import SDMXProgressiveClient
 from session_manager import SessionState
+
+_RESPONSE_EXCERPT_LEN = 400
 
 # Logger - configured lazily in main() to avoid early writes
 logger = logging.getLogger(__name__)
@@ -2563,6 +2568,129 @@ async def probe_data_url(
         query_fingerprint=result.get("query_fingerprint", ""),
         notes=notes,
     )
+
+
+
+@mcp.tool()
+async def fetch_data_rows(
+    args: FetchRowsInput,
+    ctx: Context[Any, Any, Any] | None = None
+) -> FetchRowsResult:
+    """
+    Retrieve actual SDMX data rows for a query.
+
+    Unlike probe_data_url(), this tool is intended for real data retrieval.
+    Results are bounded by max_rows to keep MCP payloads manageable.
+
+    Provide either:
+      - data_url (pre-built URL), or
+      - structured parameters (dataflow_id with optional key/filters/periods).
+
+    Args:
+        data_url: Complete SDMX data URL to fetch. Must share the scheme and
+            host of the selected endpoint's configured base_url (rejected
+            otherwise) to prevent server-side request forgery against
+            arbitrary internal/external hosts.
+        dataflow_id: Dataflow ID (alternative to data_url).
+        key: SDMX key (alternative to filters when data_url is omitted).
+        filters: Dimension filters (alternative to key when data_url is omitted).
+        start_period: Optional start period.
+        end_period: Optional end period.
+        format_type: Supported: "csv" only for now.
+        agency_id: Owning agency for structured input, defaults to endpoint agency.
+        max_rows: Maximum number of rows to return (1..5000).
+        timeout_ms: Request timeout in milliseconds.
+        endpoint: Optional endpoint key (e.g. "LAB_STAT", "ECB").
+
+    Returns:
+        FetchRowsResult with status, URL, endpoint, row counts, and retrieved
+        rows. The response is streamed and parsing stops as soon as max_rows
+        is reached, so total_rows is None (unknown) whenever truncated is True.
+    """
+
+    from tools.sdmx_tools import (
+        resolve_url_to_fetch,
+        fetch_data_rows as fetch_data_rows_impl
+    )
+
+    client, ep_key = await _resolve_client(ctx, args.endpoint)
+
+    resolved_dataflow_id = args.dataflow_id
+    resolved_key = args.key or ""
+    data_url = ""
+
+    try:
+        resolved = await resolve_url_to_fetch(args, ctx, client)
+
+        if "error" in resolved:
+            raise ValueError(f"Error: {resolved['error']}")
+
+        data_url = resolved.get("url", "")
+        resolved_key = resolved.get("key", resolved_key)
+
+        if not data_url:
+            raise ValueError("Resolved data URL is empty")
+
+        timeout_s = max(1.0, args.timeout_ms / 1000.0)
+
+        parsed = await fetch_data_rows_impl(client, data_url, args.max_rows, timeout_s)
+
+        if resolved_dataflow_id:
+            _register_dataflow_if_possible(ctx, ep_key, resolved_dataflow_id)
+
+        result = FetchRowsResult(
+            status="ok",
+            endpoint=ep_key,
+            url=data_url,
+            dataflow_id=resolved_dataflow_id,
+            key=resolved_key,
+            headers=parsed.headers,
+            returned_rows=len(parsed.rows),
+            max_rows=args.max_rows,
+            truncated=parsed.truncated,
+            rows=parsed.rows,
+        )
+        if parsed.truncated:
+            result.notes = [
+                "Result truncated at max_rows; exact total row count was not "
+                "computed to avoid buffering the full response. Increase "
+                "max_rows for more rows."
+            ]
+
+        return result
+
+    except httpx.HTTPStatusError as e:
+
+        message = "Provider returned HTTP " + str(e.response.status_code)
+        response_excerpt = e.response.text[:_RESPONSE_EXCERPT_LEN]
+        hint = _maybe_mismatch_hint(ctx, ep_key, args.dataflow_id, response_excerpt)
+
+        if hint:
+            message = message + " | " + hint
+
+        return FetchRowsResult(
+            status="error",
+            endpoint=ep_key,
+            url=data_url,
+            format=args.format_type,
+            message=message
+        )
+    
+    except Exception as e:
+
+        message = "Data fetch failed: " + str(e)
+        hint = _maybe_mismatch_hint(ctx, ep_key, args.dataflow_id, message)
+
+        if hint:
+            message = message + " | " + hint
+
+        return FetchRowsResult(
+            status="error",
+            endpoint=ep_key,
+            url=data_url,
+            format=args.format_type,
+            message=message,
+        )
 
 
 @mcp.tool()
