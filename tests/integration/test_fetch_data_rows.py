@@ -45,7 +45,7 @@ class FakeClient:
     async def get_structure_summary(self, dataflow_id, agency_id=None, ctx=None):
         return self._structure
 
-    def validate_data_url(self, data_url: str) -> bool:
+    def verify_scheme_and_host(self, data_url: str) -> bool:
         allowed = urlparse(self.base_url)
         requested = urlparse(data_url)
         return bool(
@@ -144,6 +144,21 @@ class TestFetchDataRowsTool:
         assert result.status == "error"
         assert "required" in (result.message or "")
 
+    def test_data_url_with_key_raises_value_error(self):
+        """Input validation: data_url is mutually exclusive with key."""
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            FetchRowsInput(data_url=DATA_URL, key="A.FJ")
+
+    def test_data_url_with_filters_raises_value_error(self):
+        """Input validation: data_url is mutually exclusive with filters."""
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            FetchRowsInput(data_url=DATA_URL, filters={"FREQ": "A"})
+
+    def test_data_url_with_mismatched_dataflow_id_raises_value_error(self):
+        """Input validation: provided dataflow_id must match the data_url path."""
+        with pytest.raises(ValueError, match="does not match data_url"):
+            FetchRowsInput(data_url=DATA_URL, dataflow_id="WRONG_DATAFLOW")
+
     @pytest.mark.asyncio
     @respx.mock
     @patch("main_server.get_app_context")
@@ -187,6 +202,37 @@ class TestFetchDataRowsTool:
         assert result.returned_rows == 3
         assert result.truncated is False
         # the new dataflow should have been registered with the default endpoint
+        mock_session_state.register_dataflow.assert_called_once_with("SPC", "TRADE_FOOD")
+
+    @pytest.mark.asyncio
+    @respx.mock
+    @patch("main_server.get_app_context")
+    async def test_structured_filters_without_key_success(
+        self, mock_get_app, mock_app_context, mock_session_state, fake_client
+    ):
+        """Structured input path works with filters (without key)."""
+        from main_server import fetch_data_rows as fetch_data_rows_tool
+
+        mock_get_app.return_value = mock_app_context
+        respx.get(url__startswith=fake_client.base_url + "/data/TRADE_FOOD/").mock(
+            return_value=httpx.Response(200, text=CSV_BODY)
+        )
+
+        result = await fetch_data_rows_tool(
+            FetchRowsInput(
+                dataflow_id="TRADE_FOOD",
+                filters={"FREQ": "A", "REF_AREA": "FJ"},
+            ),
+            ctx=None,
+        )
+
+        assert result.status == "ok"
+        assert result.dataflow_id == "TRADE_FOOD"
+        assert result.headers == [
+            "DATAFLOW", "FREQ", "GEO_PICT", "INDICATOR", "TIME_PERIOD", "OBS_VALUE",
+        ]
+        assert result.returned_rows == 3
+        assert result.truncated is False
         mock_session_state.register_dataflow.assert_called_once_with("SPC", "TRADE_FOOD")
 
     @pytest.mark.asyncio

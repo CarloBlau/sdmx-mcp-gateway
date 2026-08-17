@@ -9,7 +9,7 @@ Following MCP SDK v2 best practices for structured output support.
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 
 from urllib.parse import urlparse
 
@@ -966,6 +966,38 @@ class FetchRowsInput(BaseModel):
     @classmethod
     def _normalize_max_rows(cls, v: int) -> int:
         return min(max(v,1), 5000)
+
+    @model_validator(mode="after")
+    def _check_data_url_exclusivity(self) -> "FetchRowsInput":
+
+        if self.data_url is None:
+            return self
+
+        redundant = {
+            "key": self.key,
+            "filters": self.filters,
+            "start_period": self.start_period,
+            "end_period": self.end_period,
+            "agency_id": self.agency_id,
+        }
+
+        set_fields = [name for name, v in redundant.items() if v is not None]
+
+        if set_fields:
+            raise ValueError(
+                "data_url is mutually exclusive with " + ", ".join(set_fields)
+                + " (these fields are only used when building a URL from dataflow_id)"
+            )
+
+        dataflow_substring_from_id = f"/data/{self.dataflow_id}"
+
+        if self.dataflow_id is not None and dataflow_substring_from_id not in self.data_url:
+            raise ValueError(
+                f"dataflow_id={self.dataflow_id!r} does not match data_url "
+                f"({self.data_url!r}); pass a matching dataflow_id or omit it"
+            )
+
+        return self
 
 
 class FetchRowsResult(BaseModel):

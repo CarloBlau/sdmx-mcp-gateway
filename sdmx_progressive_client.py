@@ -359,14 +359,16 @@ class SDMXProgressiveClient:
             return 0, ""
 
 
-    def validate_data_url(self, data_url: str) -> bool:
+    def verify_scheme_and_host(self, data_url: str) -> bool:
 
-        # Security (SSRF): a caller-supplied data_url must resolve to the same
-        # scheme+host as the selected endpoint's configured base_url. Without
-        # this check a caller could direct this server-side fetch at an
-        # arbitrary internal or external URL (e.g. cloud metadata endpoints,
-        # other in-network services). Comparing scheme+netloc (not just a
-        # string prefix) avoids bypasses like "http://<base>.evil.com/...".
+        """
+        Security (SSRF): a caller-supplied data_url must resolve to the same
+        scheme+host as the selected endpoint's configured base_url. Without
+        this check a caller could direct this server-side fetch at an
+        arbitrary internal or external URL (e.g. cloud metadata endpoints,
+        other in-network services). Comparing scheme+netloc (not just a
+        string prefix) avoids bypasses like "http://<base>.evil.com/...".
+        """
 
         allowed = urlparse(self.base_url)
         requested = urlparse(data_url)

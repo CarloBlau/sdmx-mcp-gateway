@@ -1200,7 +1200,7 @@ async def resolve_url_to_fetch(
 
     if args.data_url is not None:
 
-        if client.validate_data_url(args.data_url):
+        if client.verify_scheme_and_host(args.data_url):
             return {"url": args.data_url}
 
         raise ValueError(
@@ -1270,12 +1270,17 @@ async def fetch_data_rows(
 ) -> ParsedCsvRows:
     """Fetch an SDMx-CSV data URL and parse it into rows, bounded by max_rows."""
 
+    query_headers = {
+        "Accept": _get_accept_header("csv", getattr(client, "endpoint_key", None)),
+        "Accept-Language": "en"
+    }
+
     session = await client._get_session()
 
     async with session.stream(
         "GET",
         data_url,
-        headers={"Accept": "application/vnd.sdmx.data+csv;version=1.0.0"},
+        headers=query_headers,
         timeout=timeout_s,
     ) as response:
 
