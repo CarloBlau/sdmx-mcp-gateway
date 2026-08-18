@@ -139,7 +139,7 @@ class TestFetchDataRowsTool:
 
         mock_get_app.return_value = mock_app_context
 
-        result = await fetch_data_rows_tool(FetchRowsInput(), ctx=None)
+        result = await fetch_data_rows_tool(ctx=None)
 
         assert result.status == "error"
         assert "required" in (result.message or "")
@@ -172,7 +172,7 @@ class TestFetchDataRowsTool:
         mock_get_app.return_value = mock_app_context
 
         result = await fetch_data_rows_tool(
-            FetchRowsInput(data_url="https://evil.example/data/DF"), ctx=None
+            data_url="https://evil.example/data/DF", ctx=None
         )
 
         assert result.status == "error"
@@ -191,7 +191,7 @@ class TestFetchDataRowsTool:
         )
 
         result = await fetch_data_rows_tool(
-            FetchRowsInput(dataflow_id="TRADE_FOOD", key="A.FJ"), ctx=None
+            dataflow_id="TRADE_FOOD", key="A.FJ", ctx=None
         )
 
         assert result.status == "ok"
@@ -219,10 +219,8 @@ class TestFetchDataRowsTool:
         )
 
         result = await fetch_data_rows_tool(
-            FetchRowsInput(
-                dataflow_id="TRADE_FOOD",
-                filters={"FREQ": "A", "REF_AREA": "FJ"},
-            ),
+            dataflow_id="TRADE_FOOD",
+            filters={"FREQ": "A", "REF_AREA": "FJ"},
             ctx=None,
         )
 
@@ -249,7 +247,7 @@ class TestFetchDataRowsTool:
         respx.get(data_url).mock(return_value=httpx.Response(404, text="Not Found"))
 
         result = await fetch_data_rows_tool(
-            FetchRowsInput(data_url=data_url, dataflow_id="TRADE_FOOD"), ctx=None
+            data_url=data_url, dataflow_id="TRADE_FOOD", ctx=None
         )
 
         assert result.status == "error"
@@ -269,7 +267,7 @@ class TestFetchDataRowsTool:
         respx.get(data_url).mock(return_value=httpx.Response(200, text=CSV_BODY))
 
         result = await fetch_data_rows_tool(
-            FetchRowsInput(data_url=data_url, max_rows=1), ctx=None
+            data_url=data_url, max_rows=1, ctx=None
         )
 
         assert result.status == "ok"
@@ -288,7 +286,7 @@ class TestFetchDataRowsTool:
         data_url = fake_client.base_url + "/data/TRADE_FOOD/all"
         fake_client._get_session = AsyncMock(side_effect=RuntimeError("network down"))
 
-        result = await fetch_data_rows_tool(FetchRowsInput(data_url=data_url), ctx=None)
+        result = await fetch_data_rows_tool(data_url=data_url, ctx=None)
 
         assert result.status == "error"
         assert result.message

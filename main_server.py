@@ -2573,8 +2573,18 @@ async def probe_data_url(
 
 @mcp.tool()
 async def fetch_data_rows(
-    args: FetchRowsInput,
-    ctx: Context[Any, Any, Any] | None = None
+    data_url: str | None = None,
+    dataflow_id: str | None = None,
+    key: str | None = None,
+    filters: dict[str, str] | None = None,
+    start_period: str | None = None,
+    end_period: str | None = None,
+    format_type: str = "csv",
+    agency_id: str | None = None,
+    max_rows: int = 200,
+    timeout_ms: int = 20000,
+    endpoint: str | None = None,
+    ctx: Context[Any, Any, Any] | None = None,
 ) -> FetchRowsResult:
     """
     Retrieve actual SDMX data rows for a query.
@@ -2611,6 +2621,20 @@ async def fetch_data_rows(
     from tools.sdmx_tools import (
         resolve_url_to_fetch,
         fetch_data_rows as fetch_data_rows_impl
+    )
+
+    args = FetchRowsInput(
+        data_url=data_url,
+        dataflow_id=dataflow_id,
+        key=key,
+        filters=filters,
+        start_period=start_period,
+        end_period=end_period,
+        format_type=format_type,
+        agency_id=agency_id,
+        max_rows=max_rows,
+        timeout_ms=timeout_ms,
+        endpoint=endpoint,
     )
 
     client, ep_key = await _resolve_client(ctx, args.endpoint)
