@@ -23,8 +23,11 @@ Constraint strategies (per endpoint):
           iterate per-flow (slow) or is unavailable.
 """
 
+import json
 import os
 from typing import Any
+from pydantic import ValidationError
+from models.schemas import CustomEndpoint
 
 # Current active configuration (can be changed at runtime)
 _current_endpoint_key = os.getenv("SDMX_ENDPOINT", "SPC")
@@ -32,6 +35,8 @@ _current_endpoint_key = os.getenv("SDMX_ENDPOINT", "SPC")
 # Allow direct URL override via environment variable
 _env_base_url = os.getenv("SDMX_BASE_URL")
 _env_agency_id = os.getenv("SDMX_AGENCY_ID")
+
+_custom_endpoints_file_path = os.getenv("SDMX_CUSTOM_ENDPOINTS_FILE")
 
 # SDMX endpoints with constraint strategy metadata (verified February 2026)
 #
@@ -230,6 +235,55 @@ SDMX_ENDPOINTS: dict[str, dict[str, Any]] = {
 }
 
 
+def load_custom_endpoints(path: str | None) -> list[CustomEndpoint]:
+    """Load and validate custom endpoint entries from a JSON file.
+
+    Returns an empty list when `path` is unset. Raises immediately on the
+    first invalid entry -- no partial loading -- and rejects any key that
+    collides with an earlier entry in the same file.
+    """
+    if not path:
+        return []
+
+    with open(path, encoding="utf-8") as custom_endpoint_file:
+        custom_endpoints_json = json.load(custom_endpoint_file)
+
+    if not isinstance(custom_endpoints_json, list):
+        raise ValueError(
+            f"{path}: SDMX_CUSTOM_ENDPOINTS_FILE must contain a JSON array of endpoint entries"
+        )
+
+    loaded_endpoints: list[CustomEndpoint] = []
+    seen_keys: set[str] = set()
+
+    for i, json_item in enumerate(custom_endpoints_json):
+        try:
+            custom_endpoint = CustomEndpoint.model_validate(json_item)
+        except ValidationError as e:
+            raise ValueError(f"{path}: invalid custom endpoint entry at index {i}: {e}") from e
+
+        if custom_endpoint.key in seen_keys:
+            raise ValueError(
+                f"{path}: duplicate endpoint key '{custom_endpoint.key!r}' found in SDMX_CUSTOM_ENDPOINTS_FILE"
+            )
+
+        seen_keys.add(custom_endpoint.key)
+        loaded_endpoints.append(custom_endpoint)
+
+    return loaded_endpoints
+
+
+def add_custom_endpoints(endpoints_to_add: list[CustomEndpoint]) -> None:
+    '''Tries to add custom endpoints from the provided list.
+    Endpoints with keys that are already in use are ignored.'''
+
+    endpoints_with_new_keys = {custom_ep.key: custom_ep.model_dump(exclude_none=True, exclude={"key"})
+                               for custom_ep in endpoints_to_add
+                               if custom_ep.key not in SDMX_ENDPOINTS}
+
+    SDMX_ENDPOINTS.update(endpoints_with_new_keys)
+
+
 def get_constraint_strategy(endpoint_key: str, kind: str = "single_flow") -> str | None:
     """
     Get the constraint-fetching strategy for an endpoint.
@@ -362,6 +416,12 @@ def get_current_config() -> dict[str, Any]:
     # Fallback to SPC
     return SDMX_ENDPOINTS["SPC"]
 
+
+
+# Add custom endpoints at import time to allow usage
+# in the fallback client for unlifespaned servers.
+custom_endpoints = load_custom_endpoints(_custom_endpoints_file_path)
+add_custom_endpoints(custom_endpoints)
 
 # Startup-time module defaults. Captured from the current config at import
 # time and never rewritten: this module has no set_endpoint() anymore. The

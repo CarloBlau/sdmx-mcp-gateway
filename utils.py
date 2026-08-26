@@ -65,7 +65,8 @@ def validate_dataflow_id(dataflow_id: str) -> bool:
     `@` is allowed because OECD publishes flows as `DSD@DF` pairs
     (e.g. `DSD_RDS_GERD@DF_GERD_SOF`).
     """
-    return bool(re.match(r"^[a-zA-Z][a-zA-Z\d_@-]*$", dataflow_id))
+
+    return bool(re.match(r"^[a-zA-Z][a-zA-Z\d_@-]*$", dataflow_id or ""))
 
 
 def validate_sdmx_key(key: str) -> bool:

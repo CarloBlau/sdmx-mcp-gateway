@@ -9,12 +9,22 @@ Following MCP SDK v2 best practices for structured output support.
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
+
+from urllib.parse import urlparse
+
+from utils import validate_provider
+
+import re
 
 # Valid probe_data_url() status values. The tool only ever emits one of these;
 # callers (SuggestionResult.original_status, SuggestionProbeResult.status) pass
 # them through unchanged.
 ProbeStatus = Literal["nonempty", "empty", "error"]
+
+# Valid field patterns for custom SDMX endpoints
+_ENDPOINT_KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
+_ENV_VAR_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 # =============================================================================
 # Common/Shared Schemas
@@ -740,6 +750,83 @@ class EndpointListResult(BaseModel):
     note: str = Field(description="Usage hint")
 
 
+class CustomEndpointConstraints(BaseModel):
+    """Constraint-fetching strategy for a custom endpoint."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    single_flow: Literal["availableconstraint", "references", "references_all"] | None = None
+    bulk: Literal["contentconstraint", "availableconstraint"] | None = None
+
+
+class CustomEndpointAuth(BaseModel):
+    """Optional subscription-key header for a custom endpoint, injected on every request. Read from the specified env var."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    header: str
+    env: str
+
+    @field_validator("env")
+    @classmethod
+    def _validate_env_name(cls, v: str) -> str:
+        if not _ENV_VAR_NAME_PATTERN.match(v):
+            raise ValueError(f"auth.env must be a valid environment variable name, got {v!r}")
+        return v
+
+class CustomEndpoint(BaseModel):
+    """Class for one custom endpoint entry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    name: str
+    base_url: str
+    agency_id: str
+    description: str
+    constraints: CustomEndpointConstraints = Field(default_factory=CustomEndpointConstraints)
+    references_support: list[str] | None = None
+    version_tag: str | None = None
+    auth: CustomEndpointAuth | None = None
+
+    @field_validator("key")
+    @classmethod
+    def _validate_key(cls, v: str) -> str:
+        if not _ENDPOINT_KEY_PATTERN.match(v):
+            raise ValueError(
+                f"key must match {_ENDPOINT_KEY_PATTERN.pattern!r} (upper-case, "
+                f"start with a letter), got {v!r}"
+            )
+        return v
+
+    @field_validator("base_url")
+    @classmethod
+    def _validate_base_url(cls, v: str) -> str:
+        parsed = urlparse(v)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError(f"base_url must be an http(s) URL, got {v!r}")
+        return v
+
+    @field_validator("agency_id")
+    @classmethod
+    def _validate_agency_id(cls, v: str) -> str:
+        if not validate_provider(v):
+            raise ValueError(f"agency_id is not a valid SDMX provider identifier: {v!r}")
+        return v
+
+    @field_validator("version_tag")
+    @classmethod
+    def _validate_version_tag(cls, v: str | None) -> str | None:
+        if v is None or v == "omit":
+            return v
+        if not v or re.search(r"[\s/?#\\]", v):
+            raise ValueError(
+                f"version_tag must be None, 'omit', "
+                f"or a valid version string, got {v!r}"
+            )
+        return v
+
+
 # =============================================================================
 # Elicitation Schemas
 # =============================================================================
@@ -848,6 +935,95 @@ class ProbeResult(BaseModel):
     notes: list[str] = Field(
         default_factory=list, description="Diagnostic notes"
     )
+
+
+
+# =============================================================================
+# Fetch Data Rows Schemas
+# =============================================================================
+
+class FetchRowsInput(BaseModel):
+    data_url: str | None = None
+    dataflow_id: str | None = None
+    key: str | None = None
+    filters: dict[str, str] | None = None
+    start_period: str | None = None
+    end_period: str | None = None
+    format_type: str = "csv"
+    agency_id: str | None = None
+    max_rows: int = 200
+    timeout_ms: int = 20000
+    endpoint: str | None = None
+
+    @field_validator("format_type")
+    @classmethod
+    def _validate_format_type(cls, v: str) -> str:
+        if v.lower() != "csv":
+            raise ValueError("Only format_type='csv' is currently supported by fetch_data_rows")
+        return v
+
+    @field_validator("max_rows")
+    @classmethod
+    def _normalize_max_rows(cls, v: int) -> int:
+        return min(max(v,1), 5000)
+
+    @model_validator(mode="after")
+    def _check_data_url_exclusivity(self) -> "FetchRowsInput":
+
+        if self.data_url is None:
+            return self
+
+        redundant = {
+            "key": self.key,
+            "filters": self.filters,
+            "start_period": self.start_period,
+            "end_period": self.end_period,
+            "agency_id": self.agency_id,
+        }
+
+        set_fields = [name for name, v in redundant.items() if v is not None]
+
+        if set_fields:
+            raise ValueError(
+                "data_url is mutually exclusive with " + ", ".join(set_fields)
+                + " (these fields are only used when building a URL from dataflow_id)"
+            )
+
+        dataflow_substring_from_id = f"/data/{self.dataflow_id}"
+
+        if self.dataflow_id is not None and dataflow_substring_from_id not in self.data_url:
+            raise ValueError(
+                f"dataflow_id={self.dataflow_id!r} does not match data_url "
+                f"({self.data_url!r}); pass a matching dataflow_id or omit it"
+            )
+
+        return self
+
+
+class FetchRowsResult(BaseModel):
+    """Result from fetch_data_rows() tool."""
+
+    status: Literal["ok", "error"] = Field(description="Outcome of the fetch")
+    endpoint: str = Field(description="Endpoint key used")
+    message: str | None = Field(default=None, description="Error message when status='error'")
+    url: str = Field(default="", description="Resolved data URL")
+    format: str = Field(default="csv", description="Requested output format")
+    dataflow_id: str | None = Field(default=None, description="Dataflow identifier, if resolved")
+    key: str | None = Field(default=None, description="Resolved SDMX key")
+    headers: list[str] = Field(default_factory=list, description="CSV column headers")
+    rows: list[dict[str, str]] = Field(default_factory=list, description="Retrieved data rows")
+    returned_rows: int = Field(default=0, description="Number of rows actually returned")
+    max_rows: int | None = Field(default=None, description="max_rows cap applied to this request")
+    truncated: bool = Field(default=False, description="Whether results were truncated at max_rows")
+    notes: list[str] = Field(default_factory=list, description="Diagnostic notes")
+
+
+class ParsedCsvRows(BaseModel):
+    """Result of streaming/parsing an SDMx-CSV response body."""
+
+    headers: list[str] = Field(default_factory=list, description="CSV column headers")
+    rows: list[dict[str, str]] = Field(default_factory=list, description="Parsed data rows")
+    truncated: bool = Field(default=False, description="Whether parsing stopped at max_rows")
 
 
 # =============================================================================

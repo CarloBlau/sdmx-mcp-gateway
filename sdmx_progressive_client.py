@@ -18,6 +18,7 @@ from enum import Enum
 from typing import Any
 
 import httpx
+from urllib.parse import urlparse
 from mcp.server.fastmcp import Context
 
 from config import SDMX_AGENCY_ID, SDMX_BASE_URL, SDMX_ENDPOINTS
@@ -251,8 +252,31 @@ class SDMXProgressiveClient:
                 verify=ssl_ctx,
                 headers=default_headers or None,
                 params=default_params or None,
+                event_hooks={"request": [self._rewrite_latest_hook]},
             )
         return self.session
+
+    async def _rewrite_latest_hook(self, request: httpx.Request) -> None:
+        """Rewrite a trailing `/latest` path segment per this endpoint's config.
+        No-op for endpoints without a `version_tag`, including every
+        built-in provider.
+        """
+        ep = SDMX_ENDPOINTS.get(self.endpoint_key or "")
+        version_tag = ep.get("version_tag") if ep else None
+
+        if version_tag is None:
+            return
+
+        path = request.url.path
+        if not path.endswith("/latest"):
+            return
+
+        if version_tag == "omit":
+            new_path = path[: -len("/latest")]
+        else:
+            new_path = path[: -len("latest")] + version_tag
+
+        request.url = request.url.copy_with(path=new_path)
 
     def _build_default_query_params(self) -> dict[str, str]:
         """Return per-endpoint query params merged into every request."""
@@ -334,6 +358,25 @@ class SDMXProgressiveClient:
         except Exception:
             return 0, ""
 
+
+    def verify_scheme_and_host(self, data_url: str) -> bool:
+
+        """
+        Security (SSRF): a caller-supplied data_url must resolve to the same
+        scheme+host as the selected endpoint's configured base_url. Without
+        this check a caller could direct this server-side fetch at an
+        arbitrary internal or external URL (e.g. cloud metadata endpoints,
+        other in-network services). Comparing scheme+netloc (not just a
+        string prefix) avoids bypasses like "http://<base>.evil.com/...".
+        """
+
+        allowed = urlparse(self.base_url)
+        requested = urlparse(data_url)
+
+        return (requested.scheme
+                and requested.netloc
+                and (requested.scheme, requested.netloc) == (allowed.scheme, allowed.netloc))
+
     async def resolve_version(
         self,
         dataflow_id: str,
@@ -360,6 +403,15 @@ class SDMXProgressiveClient:
         # If not "latest", return as-is
         if version != "latest":
             return version
+
+        # Check for explicit version tag of the endpoint
+        ep = SDMX_ENDPOINTS.get(self.endpoint_key or "")
+        version_tag = ep.get("version_tag") if ep else None
+
+        if version_tag == "omit":
+            return ""
+        elif version_tag:
+            return version_tag
 
         agency_id = agency_id or self.agency_id
         cache_key = (agency_id, dataflow_id)
